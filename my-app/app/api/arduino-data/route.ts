@@ -26,10 +26,9 @@ export async function POST(request: NextRequest) {
       }, { status: 400 })
     }
     
-    // Add timestamp if not provided
-    if (!data.timestamp) {
-      data.timestamp = new Date().toISOString()
-    }
+    // Always use server timestamp (real time) instead of ESP32 timestamp
+    // This ensures accurate timestamps even if ESP32 doesn't have real-time clock
+    data.timestamp = new Date().toISOString()
     
     // Add to recent readings (keep last 100 readings)
     recentReadings.unshift(data)
@@ -62,6 +61,9 @@ export async function GET(request: NextRequest) {
     
     // Return recent readings
     const readings = recentReadings.slice(0, limit)
+    
+    // Log for debugging
+    console.log(`GET /api/arduino-data: Returning ${readings.length} readings (total: ${recentReadings.length})`)
     
     return NextResponse.json({
       success: true,

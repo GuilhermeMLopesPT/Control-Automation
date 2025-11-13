@@ -53,6 +53,18 @@ print(f"Serial Port: {SERIAL_PORT} @ {BAUDRATE} baud")
 print(f"API URL: {API_URL}")
 print(f"Standard Voltage: {STANDARD_VOLTAGE} V")
 print("-" * 60)
+
+# Test API connection before starting
+print("Testing API connection...")
+try:
+    test_response = requests.get(API_URL.replace('/arduino-data', ''), timeout=2)
+    print(f"✓ API server is accessible")
+except requests.exceptions.RequestException:
+    print(f"✗ WARNING: Cannot connect to API at {API_URL}")
+    print(f"  Make sure Next.js is running: cd my-app && npm run dev")
+    print(f"  The script will continue but data won't be sent to the dashboard.")
+    print("-" * 60)
+
 # Print status message
 print("Waiting for data from ESP32...")
 print("-" * 60)
@@ -155,10 +167,16 @@ try:
                             # API returned an error status code
                             print(f"[{timestamp_display}] #{value_count:4d} | RMS Current: {rms_current:.4f} A | Power: {power_kw:.4f} kW | ✗ API Error: {response.status_code}")
                     
+                    except requests.exceptions.ConnectionError as e:
+                        # Handle connection errors (API not running)
+                        # Only show error once every 10 readings to avoid spam
+                        if value_count % 10 == 1:
+                            print(f"[{timestamp_display}] #{value_count:4d} | RMS Current: {rms_current:.4f} A | Power: {power_kw:.4f} kW | ✗ API: Connection failed - Is Next.js running?")
+                        else:
+                            print(f"[{timestamp_display}] #{value_count:4d} | RMS Current: {rms_current:.4f} A | Power: {power_kw:.4f} kW")
                     except requests.exceptions.RequestException as e:
-                        # Handle network errors (API not running, connection refused, etc.)
-                        # Display data anyway, but show API error
-                        print(f"[{timestamp_display}] #{value_count:4d} | RMS Current: {rms_current:.4f} A | Power: {power_kw:.4f} kW | ✗ API: {str(e)}")
+                        # Handle other network errors
+                        print(f"[{timestamp_display}] #{value_count:4d} | RMS Current: {rms_current:.4f} A | Power: {power_kw:.4f} kW | ✗ API Error: {str(e)[:50]}")
                 else:
                     # Fallback method: if regex didn't match, try to find any number
                     # This is a backup in case the format changes slightly
@@ -199,8 +217,14 @@ try:
                                 print(f"[{timestamp_display}] #{value_count:4d} | RMS Current: {rms_current:.4f} A | Power: {power_kw:.4f} kW | ✓ API: {result.get('message', 'OK')}")
                             else:
                                 print(f"[{timestamp_display}] #{value_count:4d} | RMS Current: {rms_current:.4f} A | Power: {power_kw:.4f} kW | ✗ API Error: {response.status_code}")
+                        except requests.exceptions.ConnectionError as e:
+                            # Handle connection errors (API not running)
+                            if value_count % 10 == 1:
+                                print(f"[{timestamp_display}] #{value_count:4d} | RMS Current: {rms_current:.4f} A | Power: {power_kw:.4f} kW | ✗ API: Connection failed - Is Next.js running?")
+                            else:
+                                print(f"[{timestamp_display}] #{value_count:4d} | RMS Current: {rms_current:.4f} A | Power: {power_kw:.4f} kW")
                         except requests.exceptions.RequestException as e:
-                            print(f"[{timestamp_display}] #{value_count:4d} | RMS Current: {rms_current:.4f} A | Power: {power_kw:.4f} kW | ✗ API: {str(e)}")
+                            print(f"[{timestamp_display}] #{value_count:4d} | RMS Current: {rms_current:.4f} A | Power: {power_kw:.4f} kW | ✗ API Error: {str(e)[:50]}")
             else:
                 # If the line doesn't contain RMS data, check for other messages
                 # Print initialization messages from ESP32 (like "ADS1115 CT RMS Monitor")

@@ -8,116 +8,101 @@ import {
   Zap, 
   TrendingUp, 
   Euro, 
-  BarChart3, 
   Monitor,
-  Clock,
-  Activity,
-  Vibrate
+  Activity
 } from "lucide-react"
 import { ElectricityPricesTab } from "@/components/electricity-prices-tab"
+import { LineChart, Line, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer } from "recharts"
 
-interface PowerData {
+interface MeasurementData {
   timestamp: string
-  power: number
+  timestampMs: number  // Milliseconds for X-axis
   current: number
-  voltage: number
-  cost: number
-}
-
-interface VibrationData {
-  timestamp: string
-  vibration: number
-  frequency: number
+  power: number
 }
 
 export default function DashboardPage() {
-  const [activeTab, setActiveTab] = useState("monitoring")
-  const [currentPower, setCurrentPower] = useState(2.1)
-  const [currentCurrent, setCurrentCurrent] = useState(9.5)
-  const [currentVoltage, setCurrentVoltage] = useState(230)
-  const [powerHistory, setPowerHistory] = useState<PowerData[]>([])
-  const [vibrationHistory, setVibrationHistory] = useState<VibrationData[]>([])
+  const [activeTab, setActiveTab] = useState("measurements")
+  const [currentCurrent, setCurrentCurrent] = useState(0)
+  const [currentPower, setCurrentPower] = useState(0)
+  const [currentHistory, setCurrentHistory] = useState<MeasurementData[]>([])
+  const [powerHistory, setPowerHistory] = useState<MeasurementData[]>([])
 
-  // Fetch real-time data from Arduino
+  // Fetch real-time data from API
   useEffect(() => {
     const fetchArduinoData = async () => {
       try {
-        const response = await fetch('/api/arduino-data?limit=24')
+        const response = await fetch('/api/arduino-data?limit=50')
         const result = await response.json()
         
         if (result.success && result.data.length > 0) {
           const latestData = result.data[0]
           
-          setCurrentPower(Math.round(latestData.power * 10) / 10)
-          setCurrentCurrent(Math.round(latestData.current * 10) / 10)
-          setCurrentVoltage(Math.round(latestData.voltage * 10) / 10)
+          // Current comes directly from ESP32
+          const current = latestData.current || 0
+          // Power is calculated: Current × 230V (converted to kW)
+          const power = (current * 230) / 1000
           
-          // Update power history
-          const powerHistoryData: PowerData[] = result.data.map((data: any) => ({
+          setCurrentCurrent(current)
+          setCurrentPower(power)
+          
+          // Update history for charts
+          // Sort by timestamp to ensure chronological order (newest first from API)
+          const sortedData = [...result.data].sort((a: any, b: any) => {
+            return new Date(a.timestamp).getTime() - new Date(b.timestamp).getTime()
+          })
+          
+          const historyData: MeasurementData[] = sortedData.map((data: any) => ({
             timestamp: data.timestamp,
-            power: data.power,
-            current: data.current,
-            voltage: data.voltage,
-            cost: data.power * 0.15
+            timestampMs: new Date(data.timestamp).getTime(), // Convert to milliseconds for X-axis
+            current: data.current || 0,
+            power: ((data.current || 0) * 230) / 1000
           }))
           
-          setPowerHistory(powerHistoryData)
-          
-          // Update vibration history if available
-          const vibrationHistoryData: VibrationData[] = result.data
-            .filter((data: any) => data.vibration !== undefined)
-            .map((data: any) => ({
-              timestamp: data.timestamp,
-              vibration: data.vibration,
-              frequency: data.frequency || 50
-            }))
-          
-          setVibrationHistory(vibrationHistoryData)
+          setCurrentHistory(historyData)
+          setPowerHistory(historyData)
         }
       } catch (error) {
         console.error('Error fetching Arduino data:', error)
-        // Fallback to simulated data if Arduino is not connected
-        const variation = (Math.random() - 0.5) * 0.5
-        const newPower = Math.max(0, currentPower + variation)
-        const newCurrent = Math.max(0, currentCurrent + (Math.random() - 0.5) * 0.5)
-        const newVoltage = 230 + (Math.random() - 0.5) * 10
-        
-        setCurrentPower(Math.round(newPower * 10) / 10)
-        setCurrentCurrent(Math.round(newCurrent * 10) / 10)
-        setCurrentVoltage(Math.round(newVoltage * 10) / 10)
-        
-        const newPowerData: PowerData = {
-          timestamp: new Date().toISOString(),
-          power: newPower,
-          current: newCurrent,
-          voltage: newVoltage,
-          cost: newPower * 0.15
-        }
-        
-        setPowerHistory(prev => [newPowerData, ...prev.slice(0, 23)])
-        
-        const newVibrationData: VibrationData = {
-          timestamp: new Date().toISOString(),
-          vibration: Math.random() * 100,
-          frequency: 50 + Math.random() * 20
-        }
-        
-        setVibrationHistory(prev => [newVibrationData, ...prev.slice(0, 23)])
       }
     }
 
     // Fetch data immediately
     fetchArduinoData()
     
-    // Then fetch every 2 seconds
-    const interval = setInterval(fetchArduinoData, 2000)
+    // Then fetch every 5 seconds (matching ESP32 update rate)
+    const interval = setInterval(fetchArduinoData, 5000)
 
     return () => clearInterval(interval)
   }, [])
 
-  const totalCost = powerHistory.reduce((sum, data) => sum + data.cost, 0)
-  const avgPower = powerHistory.length > 0 ? powerHistory.reduce((sum, data) => sum + data.power, 0) / powerHistory.length : 0
-  const avgVibration = vibrationHistory.length > 0 ? vibrationHistory.reduce((sum, data) => sum + data.vibration, 0) / vibrationHistory.length : 0
+  // Format timestamp for chart - show seconds
+  const formatTime = (timestamp: string) => {
+    const date = new Date(timestamp)
+    return date.toLocaleTimeString('pt-PT', { hour: '2-digit', minute: '2-digit', second: '2-digit' })
+  }
+
+  // Format time for X-axis display
+  const formatTimeForAxis = (timestamp: string) => {
+    const date = new Date(timestamp)
+    return `${date.getHours()}:${date.getMinutes().toString().padStart(2, '0')}:${date.getSeconds().toString().padStart(2, '0')}`
+  }
+
+  // Get formatted ticks for X-axis from data (every 5 seconds)
+  const getFormattedTicks = (data: MeasurementData[]) => {
+    if (data.length === 0) return []
+    
+    const tickValues: number[] = []
+    
+    // Show first, last, and every 5th point to avoid overcrowding
+    for (let i = 0; i < data.length; i++) {
+      if (i === 0 || i === data.length - 1 || i % 5 === 0) {
+        tickValues.push(data[i].timestampMs)
+      }
+    }
+    
+    return tickValues
+  }
 
   return (
     <div className="min-h-screen bg-background flex">
@@ -139,20 +124,12 @@ export default function DashboardPage() {
         <nav className="flex-1 p-4">
           <div className="space-y-2">
             <Button
-              variant={activeTab === "monitoring" ? "default" : "ghost"}
+              variant={activeTab === "measurements" ? "default" : "ghost"}
               className="w-full justify-start"
-              onClick={() => setActiveTab("monitoring")}
+              onClick={() => setActiveTab("measurements")}
             >
               <Monitor className="mr-3 h-5 w-5" />
-              Power Monitoring
-            </Button>
-            <Button
-              variant={activeTab === "vibration" ? "default" : "ghost"}
-              className="w-full justify-start"
-              onClick={() => setActiveTab("vibration")}
-            >
-              <Vibrate className="mr-3 h-5 w-5" />
-              Vibration Sensor
+              Measurements
             </Button>
             <Button
               variant={activeTab === "prices" ? "default" : "ghost"}
@@ -165,36 +142,6 @@ export default function DashboardPage() {
           </div>
         </nav>
 
-        {/* Stats */}
-        <div className="p-4 space-y-4 border-t border-border">
-          <Card className="smart-card">
-            <CardContent className="p-4">
-            <div className="flex items-center justify-between mb-2">
-                <span className="text-sm text-muted-foreground">Current Power</span>
-                <Badge variant="secondary" className="text-xs">
-                Live
-              </Badge>
-            </div>
-              <div className="text-2xl font-bold text-primary">{currentPower} kW</div>
-              <div className="text-sm text-muted-foreground mt-1">
-                {currentCurrent} A @ {currentVoltage} V
-            </div>
-            </CardContent>
-          </Card>
-
-          <Card className="smart-card">
-            <CardContent className="p-4">
-              <div className="flex items-center justify-between mb-2">
-                <span className="text-sm text-muted-foreground">Vibration Level</span>
-                <Activity className="h-3 w-3 text-muted-foreground" />
-              </div>
-              <div className="text-xl font-bold text-foreground">{avgVibration.toFixed(1)}%</div>
-              <div className="text-xs text-muted-foreground mt-1">
-                Avg: {avgPower.toFixed(1)} kW
-              </div>
-            </CardContent>
-          </Card>
-        </div>
       </aside>
 
       {/* Main Content */}
@@ -203,13 +150,11 @@ export default function DashboardPage() {
         <header className="h-16 border-b border-border bg-card px-6 flex items-center justify-between">
           <div>
             <h2 className="text-xl font-semibold text-foreground">
-              {activeTab === "monitoring" && "Power Monitoring"}
-              {activeTab === "vibration" && "Vibration Sensor"}
+              {activeTab === "measurements" && "Measurements"}
               {activeTab === "prices" && "REE Electricity Prices"}
             </h2>
             <p className="text-sm text-muted-foreground">
-              {activeTab === "monitoring" && "Real-time power, current and voltage monitoring"}
-              {activeTab === "vibration" && "Vibration sensor data and frequency analysis"}
+              {activeTab === "measurements" && "Real-time current and power monitoring"}
               {activeTab === "prices" && "Spanish electricity market prices from REE"}
             </p>
           </div>
@@ -217,133 +162,167 @@ export default function DashboardPage() {
 
         {/* Content */}
         <div className="flex-1 p-6 overflow-auto">
-          {activeTab === "monitoring" && (
+          {activeTab === "measurements" && (
             <div className="space-y-6">
-              {/* Current Power Display */}
-              <Card className="smart-card">
-                <CardHeader>
-                  <CardTitle className="flex items-center">
-                    <Monitor className="h-6 w-6 text-primary mr-3" />
-                    Current Power Consumption
-                  </CardTitle>
-                </CardHeader>
-                <CardContent>
-                  <div className="text-center py-8">
-                    <div className="text-6xl font-bold text-primary mb-4">{currentPower} kW</div>
-                    <div className="text-muted-foreground mb-6">Real-time power consumption</div>
-                    <div className="grid grid-cols-3 gap-4 text-center">
-                      <div>
-                        <div className="text-2xl font-semibold text-foreground">{currentCurrent} A</div>
-                        <div className="text-sm text-muted-foreground">Current</div>
-                      </div>
-                      <div>
-                        <div className="text-2xl font-semibold text-foreground">{currentVoltage} V</div>
-                        <div className="text-sm text-muted-foreground">Voltage</div>
-                      </div>
-                      <div>
-                        <div className="text-2xl font-semibold text-foreground">€{(currentPower * 0.15).toFixed(2)}</div>
-                        <div className="text-sm text-muted-foreground">Cost/hour</div>
-                      </div>
+              {/* Current and Power Cards at the top */}
+              <div className="grid grid-cols-2 gap-4">
+                <Card className="smart-card">
+                  <CardContent className="p-6">
+                    <div className="flex items-center justify-between mb-2">
+                      <span className="text-sm text-muted-foreground">Current</span>
+                      <Badge variant="secondary" className="text-xs">
+                        Live
+                      </Badge>
                     </div>
-                  </div>
-                </CardContent>
-              </Card>
+                    <div className="text-4xl font-bold text-primary mb-1">{currentCurrent.toFixed(4)} A</div>
+                    <div className="text-sm text-muted-foreground">
+                    </div>
+                  </CardContent>
+                </Card>
 
-              {/* Power History Chart */}
-              <Card className="smart-card">
-                <CardHeader>
-                  <CardTitle className="flex items-center">
-                    <TrendingUp className="h-6 w-6 text-primary mr-3" />
-                    Power & Current History (Last 24 readings)
-                  </CardTitle>
-                </CardHeader>
-                <CardContent>
-                  <div className="h-64 flex items-end justify-between gap-1">
-                    {powerHistory.slice(0, 24).map((data, index) => (
-                      <div key={index} className="flex flex-col items-center gap-1 flex-1">
-                        <div
-                          className="bg-primary rounded-t w-full min-h-[4px]"
-                          style={{ height: `${(data.power / 5) * 100}%` }}
-                          title={`Power: ${data.power} kW - Current: ${data.current} A - ${new Date(data.timestamp).toLocaleTimeString()}`}
-                        />
-                        <div
-                          className="bg-chart-2 rounded-t w-full min-h-[2px]"
-                          style={{ height: `${(data.current / 15) * 50}%` }}
-                        />
-                      </div>
-                    ))}
-                  </div>
-                  <div className="mt-4 flex justify-center gap-6 text-sm text-muted-foreground">
-                    <div className="flex items-center gap-2">
-                      <div className="w-3 h-3 bg-primary rounded"></div>
-                      <span>Power (kW)</span>
+                <Card className="smart-card">
+                  <CardContent className="p-6">
+                    <div className="flex items-center justify-between mb-2">
+                      <span className="text-sm text-muted-foreground">Power</span>
+                      <Activity className="h-4 w-4 text-muted-foreground" />
                     </div>
-                    <div className="flex items-center gap-2">
-                      <div className="w-3 h-3 bg-chart-2 rounded"></div>
-                      <span>Current (A)</span>
+                    <div className="text-4xl font-bold text-foreground mb-1">{currentPower.toFixed(4)} kW</div>
+                    <div className="text-sm text-muted-foreground">
                     </div>
-                  </div>
-                  <div className="mt-2 text-sm text-muted-foreground text-center">
-                    Each bar represents a 2-second reading
-                  </div>
-                </CardContent>
-              </Card>
-            </div>
-          )}
+                  </CardContent>
+                </Card>
+              </div>
 
-          {activeTab === "vibration" && (
-            <div className="space-y-6">
-              {/* Vibration Display */}
-              <Card className="smart-card">
-                <CardHeader>
-                  <CardTitle className="flex items-center">
-                    <Vibrate className="h-6 w-6 text-primary mr-3" />
-                    Vibration Sensor Data
-                  </CardTitle>
-                </CardHeader>
-                <CardContent>
-                  <div className="text-center py-8">
-                    <div className="text-6xl font-bold text-primary mb-4">{avgVibration.toFixed(1)}%</div>
-                    <div className="text-muted-foreground mb-6">Current vibration level</div>
-                    <div className="grid grid-cols-2 gap-4 text-center">
-                      <div>
-                        <div className="text-2xl font-semibold text-foreground">{vibrationHistory[0]?.frequency.toFixed(1) || 0} Hz</div>
-                        <div className="text-sm text-muted-foreground">Frequency</div>
+              {/* Charts side by side */}
+              <div className="grid grid-cols-2 gap-4">
+                {/* Current Chart */}
+                <Card className="smart-card">
+                  <CardHeader>
+                    <CardTitle className="flex items-center">
+                      <TrendingUp className="h-6 w-6 text-primary mr-3" />
+                      Current (A)
+                    </CardTitle>
+                  </CardHeader>
+                  <CardContent>
+                    {currentHistory.length > 0 ? (
+                      <div className="h-80">
+                        <ResponsiveContainer width="100%" height="100%">
+                          <LineChart 
+                            data={currentHistory}
+                            key={currentHistory.length} // Force re-render when data changes
+                          >
+                            <CartesianGrid strokeDasharray="3 3" />
+                            <XAxis 
+                              dataKey="timestampMs" 
+                              type="number"
+                              scale="time"
+                              domain={['dataMin', 'dataMax']}
+                              tickFormatter={(value: number) => {
+                                // Value is milliseconds, convert to date
+                                try {
+                                  const date = new Date(value)
+                                  if (isNaN(date.getTime())) return ''
+                                  return formatTimeForAxis(date.toISOString())
+                                } catch {
+                                  return ''
+                                }
+                              }}
+                              ticks={getFormattedTicks(currentHistory)}
+                              tick={{ fontSize: 11 }}
+                              angle={-45}
+                              textAnchor="end"
+                              height={60}
+                            />
+                            <YAxis 
+                              label={{ value: 'Current (A)', angle: -90, position: 'insideLeft' }}
+                              tick={{ fontSize: 12 }}
+                            />
+                            <Tooltip 
+                              labelFormatter={(value) => `Time: ${formatTime(value)}`}
+                              formatter={(value: number) => [`${value.toFixed(4)} A`, 'Current']}
+                            />
+                            <Line 
+                              type="monotone" 
+                              dataKey="current" 
+                              stroke="#8b5cf6" 
+                              strokeWidth={2}
+                              dot={false}
+                            />
+                          </LineChart>
+                        </ResponsiveContainer>
                       </div>
-                      <div>
-                        <div className="text-2xl font-semibold text-foreground">{vibrationHistory[0]?.vibration.toFixed(1) || 0}%</div>
-                        <div className="text-sm text-muted-foreground">Current Level</div>
+                    ) : (
+                      <div className="h-80 flex items-center justify-center text-muted-foreground">
+                        No data available. Waiting for ESP32 data...
                       </div>
-                    </div>
-                  </div>
-                </CardContent>
-              </Card>
+                    )}
+                  </CardContent>
+                </Card>
 
-              {/* Vibration History Chart */}
-              <Card className="smart-card">
-                <CardHeader>
-                  <CardTitle className="flex items-center">
-                    <BarChart3 className="h-6 w-6 text-primary mr-3" />
-                    Vibration History (Last 24 readings)
-                  </CardTitle>
-                </CardHeader>
-                <CardContent>
-                  <div className="h-64 flex items-end justify-between gap-1">
-                    {vibrationHistory.slice(0, 24).map((data, index) => (
-                      <div key={index} className="flex flex-col items-center gap-1 flex-1">
-                        <div
-                          className="bg-chart-3 rounded-t w-full min-h-[4px]"
-                          style={{ height: `${data.vibration}%` }}
-                          title={`Vibration: ${data.vibration.toFixed(1)}% - Frequency: ${data.frequency.toFixed(1)} Hz - ${new Date(data.timestamp).toLocaleTimeString()}`}
-                        />
+                {/* Power Chart */}
+                <Card className="smart-card">
+                  <CardHeader>
+                    <CardTitle className="flex items-center">
+                      <TrendingUp className="h-6 w-6 text-primary mr-3" />
+                      Power (kW)
+                    </CardTitle>
+                  </CardHeader>
+                  <CardContent>
+                    {powerHistory.length > 0 ? (
+                      <div className="h-80">
+                        <ResponsiveContainer width="100%" height="100%">
+                          <LineChart 
+                            data={powerHistory}
+                            key={powerHistory.length} // Force re-render when data changes
+                          >
+                            <CartesianGrid strokeDasharray="3 3" />
+                            <XAxis 
+                              dataKey="timestampMs" 
+                              type="number"
+                              scale="time"
+                              domain={['dataMin', 'dataMax']}
+                              tickFormatter={(value: number) => {
+                                // Value is milliseconds, convert to date
+                                try {
+                                  const date = new Date(value)
+                                  if (isNaN(date.getTime())) return ''
+                                  return formatTimeForAxis(date.toISOString())
+                                } catch {
+                                  return ''
+                                }
+                              }}
+                              ticks={getFormattedTicks(powerHistory)}
+                              tick={{ fontSize: 11 }}
+                              angle={-45}
+                              textAnchor="end"
+                              height={60}
+                            />
+                            <YAxis 
+                              label={{ value: 'Power (kW)', angle: -90, position: 'insideLeft' }}
+                              tick={{ fontSize: 12 }}
+                            />
+                            <Tooltip 
+                              labelFormatter={(value) => `Time: ${formatTime(value)}`}
+                              formatter={(value: number) => [`${value.toFixed(4)} kW`, 'Power']}
+                            />
+                            <Line 
+                              type="monotone" 
+                              dataKey="power" 
+                              stroke="#a78bfa" 
+                              strokeWidth={2}
+                              dot={false}
+                            />
+                          </LineChart>
+                        </ResponsiveContainer>
                       </div>
-                    ))}
-                  </div>
-                  <div className="mt-4 text-sm text-muted-foreground text-center">
-                    Each bar represents a 2-second reading
-                  </div>
-                </CardContent>
-              </Card>
+                    ) : (
+                      <div className="h-80 flex items-center justify-center text-muted-foreground">
+                        No data available. Waiting for ESP32 data...
+                      </div>
+                    )}
+                  </CardContent>
+                </Card>
+              </div>
             </div>
           )}
 
