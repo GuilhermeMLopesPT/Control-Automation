@@ -9,7 +9,8 @@ import {
   TrendingUp, 
   Euro, 
   Monitor,
-  Activity
+  Activity,
+  Power
 } from "lucide-react"
 import { ElectricityPricesTab } from "@/components/electricity-prices-tab"
 import { LineChart, Line, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer } from "recharts"
@@ -27,6 +28,8 @@ export default function DashboardPage() {
   const [currentPower, setCurrentPower] = useState(0)
   const [currentHistory, setCurrentHistory] = useState<MeasurementData[]>([])
   const [powerHistory, setPowerHistory] = useState<MeasurementData[]>([])
+  const [relayState, setRelayState] = useState<'on' | 'off'>('off')
+  const [relayLoading, setRelayLoading] = useState(false)
 
   // Fetch real-time data from API
   useEffect(() => {
@@ -40,8 +43,9 @@ export default function DashboardPage() {
           
           // Current comes directly from ESP32
           const current = latestData.current || 0
-          // Power is calculated: Current × 230V (converted to kW)
-          const power = (current * 230) / 1000
+          // Calculate power: Current × 230V (in Watts)
+          // We calculate it here to ensure accuracy, even if ESP32 sends power in kW
+          const power = current * 230
           
           setCurrentCurrent(current)
           setCurrentPower(power)
@@ -56,7 +60,7 @@ export default function DashboardPage() {
             timestamp: data.timestamp,
             timestampMs: new Date(data.timestamp).getTime(), // Convert to milliseconds for X-axis
             current: data.current || 0,
-            power: ((data.current || 0) * 230) / 1000
+            power: (data.current || 0) * 230 // Calculate power from current: I × 230V (in Watts)
           }))
           
           setCurrentHistory(historyData)
@@ -75,6 +79,62 @@ export default function DashboardPage() {
 
     return () => clearInterval(interval)
   }, [])
+
+  // Fetch relay state periodically
+  useEffect(() => {
+    const fetchRelayState = async () => {
+      try {
+        const response = await fetch('/api/relay-control')
+        const result = await response.json()
+        console.log('Relay state from API:', result)
+        if (result.status) {
+          setRelayState(result.status)
+        }
+      } catch (error) {
+        console.error('Error fetching relay state:', error)
+      }
+    }
+
+    // Fetch immediately on mount
+    fetchRelayState()
+    const interval = setInterval(fetchRelayState, 2000) // Check every 2 seconds
+    return () => clearInterval(interval)
+  }, [])
+
+  // Control relay function
+  const controlRelay = async (command: 'on' | 'off') => {
+    console.log('Control relay called with command:', command)
+    console.log('Current relay state:', relayState)
+    console.log('Current relay loading:', relayLoading)
+    
+    setRelayLoading(true)
+    try {
+      console.log('Sending POST request to /api/relay-control with command:', command)
+      const response = await fetch('/api/relay-control', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({ command }),
+      })
+      const result = await response.json()
+      console.log('Response from API:', result)
+      
+      if (result.success) {
+        console.log('Relay command sent successfully:', command)
+        // Immediately update local state optimistically
+        setRelayState(command)
+        // State will be confirmed by the periodic fetch
+      } else {
+        console.error('Failed to send relay command:', result.error)
+      }
+    } catch (error) {
+      console.error('Error controlling relay:', error)
+    } finally {
+      console.log('Setting relayLoading to false')
+      setRelayLoading(false)
+    }
+  }
 
   // Format timestamp for chart - show seconds
   const formatTime = (timestamp: string) => {
@@ -186,12 +246,65 @@ export default function DashboardPage() {
                       <span className="text-sm text-muted-foreground">Power</span>
                       <Activity className="h-4 w-4 text-muted-foreground" />
                     </div>
-                    <div className="text-4xl font-bold text-foreground mb-1">{currentPower.toFixed(4)} kW</div>
+                    <div className="text-4xl font-bold text-foreground mb-1">{currentPower.toFixed(2)} W</div>
                     <div className="text-sm text-muted-foreground">
                     </div>
                   </CardContent>
                 </Card>
               </div>
+
+              {/* Relay Control Card */}
+              <Card className="smart-card">
+                <CardHeader>
+                  <CardTitle className="flex items-center">
+                    <Power className="h-6 w-6 text-primary mr-3" />
+                    Smart Plug Control
+                  </CardTitle>
+                </CardHeader>
+                <CardContent>
+                  <div className="space-y-4">
+                    <div className="flex items-center justify-between">
+                      <div className="flex items-center space-x-4">
+                        <div>
+                          <div className="text-sm text-muted-foreground mb-1">Status</div>
+                          <Badge 
+                            variant={relayState === 'on' ? 'default' : 'secondary'}
+                            className="text-base px-3 py-1"
+                          >
+                            {relayState === 'on' ? 'ON' : 'OFF'}
+                          </Badge>
+                        </div>
+                      </div>
+                      <div className="flex items-center space-x-2">
+                        <Button
+                          onClick={() => controlRelay('on')}
+                          disabled={relayLoading || relayState === 'on'}
+                          variant={relayState === 'on' ? 'default' : 'outline'}
+                          className="min-w-[100px]"
+                        >
+                          {relayLoading && relayState === 'off' ? 'Loading...' : 'Turn ON'}
+                        </Button>
+                        <Button
+                          onClick={() => {
+                            console.log('Turn OFF button clicked')
+                            console.log('relayLoading:', relayLoading)
+                            console.log('relayState:', relayState)
+                            controlRelay('off')
+                          }}
+                          disabled={relayLoading}
+                          variant={relayState === 'off' ? 'secondary' : 'destructive'}
+                          className="min-w-[100px]"
+                        >
+                          {relayLoading ? 'Loading...' : 'Turn OFF'}
+                        </Button>
+                      </div>
+                    </div>
+                    <div className="text-xs text-muted-foreground pt-2 border-t border-border">
+                      <p>💡 Se o relay estiver ligado mas o status mostrar OFF, clica em "Turn OFF" para sincronizar.</p>
+                    </div>
+                  </div>
+                </CardContent>
+              </Card>
 
               {/* Charts side by side */}
               <div className="grid grid-cols-2 gap-4">
@@ -200,7 +313,7 @@ export default function DashboardPage() {
                   <CardHeader>
                     <CardTitle className="flex items-center">
                       <TrendingUp className="h-6 w-6 text-primary mr-3" />
-                      Current (A)
+                      Current (A) 
                     </CardTitle>
                   </CardHeader>
                   <CardContent>
@@ -264,7 +377,7 @@ export default function DashboardPage() {
                   <CardHeader>
                     <CardTitle className="flex items-center">
                       <TrendingUp className="h-6 w-6 text-primary mr-3" />
-                      Power (kW)
+                      Power (W)
                     </CardTitle>
                   </CardHeader>
                   <CardContent>
@@ -298,12 +411,12 @@ export default function DashboardPage() {
                               height={60}
                             />
                             <YAxis 
-                              label={{ value: 'Power (kW)', angle: -90, position: 'insideLeft' }}
+                              label={{ value: 'Power (W)', angle: -90, position: 'insideLeft' }}
                               tick={{ fontSize: 12 }}
                             />
                             <Tooltip 
                               labelFormatter={(value) => `Time: ${formatTime(value)}`}
-                              formatter={(value: number) => [`${value.toFixed(4)} kW`, 'Power']}
+                              formatter={(value: number) => [`${value.toFixed(2)} W`, 'Power']}
                             />
                             <Line 
                               type="monotone" 

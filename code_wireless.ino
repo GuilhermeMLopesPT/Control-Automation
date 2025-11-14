@@ -26,9 +26,18 @@ const char* password = "12345678";    // ← Change to your WiFi password
 // Find your computer's IP: Windows (ipconfig) or Mac/Linux (ifconfig)
 // Example: "http://192.168.1.100:3000/api/arduino-data"
 const char* apiUrl = "http://172.20.10.2:3000/api/arduino-data";  // ← Change to your computer's IP
+const char* relayControlUrl = "http://172.20.10.2:3000/api/relay-control";  // ← Relay control API
 
 // Standard voltage (for power calculation)
 const double STANDARD_VOLTAGE = 230.0;  // 230V for Portugal/Spain
+
+//=================================================================================================================================
+// RELAY CONFIGURATION
+//=================================================================================================================================
+#define RELAY_PIN 2  // GPIO pin connected to relay module IN pin (change if needed)
+// Note: Relay module V2.0 typically uses LOW to activate and HIGH to deactivate
+// If your relay works opposite, swap the logic in setRelayState()
+bool relayState = false;  // Current relay state (false = OFF, true = ON)
 
 //=================================================================================================================================
 // ADS1115 CONFIGURATION
@@ -191,6 +200,109 @@ void sendDataToAPI(double rmsCurrent) {
   http.end();
 }
 
+// Set relay state (ON or OFF)
+void setRelayState(bool state) {
+  // Always update GPIO, even if state variable is the same
+  // This ensures physical relay matches software state
+  relayState = state;
+  
+  // Relay module V2.0: Try both logics to find which works
+  // Option 1: HIGH = ON, LOW = OFF (most common)
+  // Option 2: LOW = ON, HIGH = OFF (active low - uncomment if Option 1 doesn't work)
+  
+  if (state) {
+    digitalWrite(RELAY_PIN, HIGH);  // Try HIGH for ON
+  } else {
+    digitalWrite(RELAY_PIN, LOW);   // Try LOW for OFF
+  }
+  
+  // Verify the pin was actually set
+  delay(10);  // Small delay to ensure pin state is set
+  int actualPinState = digitalRead(RELAY_PIN);
+  
+  Serial.println("========================================");
+  Serial.print("[Relay] Command: Set to ");
+  Serial.println(state ? "ON" : "OFF");
+  Serial.print("[Relay] GPIO ");
+  Serial.print(RELAY_PIN);
+  Serial.print(" written: ");
+  Serial.println(state ? "HIGH" : "LOW");
+  Serial.print("[Relay] GPIO ");
+  Serial.print(RELAY_PIN);
+  Serial.print(" read back: ");
+  Serial.println(actualPinState == HIGH ? "HIGH" : "LOW");
+  Serial.println("========================================");
+  
+  // If read back doesn't match, there's a problem
+  if ((state && actualPinState != HIGH) || (!state && actualPinState != LOW)) {
+    Serial.println("[Relay] ⚠ WARNING: Pin state mismatch!");
+  }
+}
+
+// Check for relay control commands from server
+void checkRelayCommand() {
+  if (!wifiConnected) {
+    return;
+  }
+
+  HTTPClient http;
+  http.begin(relayControlUrl);
+  http.addHeader("Content-Type", "application/json");
+  
+  // Send GET request to check for pending commands
+  int httpResponseCode = http.GET();
+  
+  if (httpResponseCode == 200) {
+    String response = http.getString();
+    Serial.print("Relay command check response: ");
+    Serial.println(response);
+    
+    // Parse JSON response
+    // Expected format: {"command": "on"} or {"command": "off"} or {"command": null}
+    if (response.indexOf("\"command\":\"on\"") >= 0) {
+      Serial.println("Received ON command");
+      setRelayState(true);
+      // Acknowledge command by sending status back
+      sendRelayStatus();
+    } else if (response.indexOf("\"command\":\"off\"") >= 0) {
+      Serial.println("========================================");
+      Serial.println("[Relay] ✓✓✓ RECEIVED OFF COMMAND ✓✓✓");
+      Serial.println("========================================");
+      setRelayState(false);
+      delay(100);  // Give relay time to physically switch
+      sendRelayStatus();
+    }
+    // If command is null, no action needed
+  } else {
+    Serial.print("Relay command check failed: ");
+    Serial.println(httpResponseCode);
+  }
+  
+  http.end();
+}
+
+// Send current relay status to server
+void sendRelayStatus() {
+  if (!wifiConnected) {
+    return;
+  }
+
+  HTTPClient http;
+  http.begin(relayControlUrl);
+  http.addHeader("Content-Type", "application/json");
+  
+  // Send POST with current status
+  String jsonPayload = "{\"status\":\"" + String(relayState ? "on" : "off") + "\"}";
+  int httpResponseCode = http.POST(jsonPayload);
+  
+  if (httpResponseCode == 200) {
+    Serial.print("Relay status sent: ");
+    Serial.println(relayState ? "ON" : "OFF");
+  }
+  
+  http.end();
+}
+
 //=================================================================================================================================
 // SETUP FUNCTION
 //=================================================================================================================================
@@ -208,9 +320,19 @@ void setup() {
   // Configure the ADS1115 ADC
   config_i2c();
 
+  // Configure relay pin
+  pinMode(RELAY_PIN, OUTPUT);
+  setRelayState(false);  // Start with relay OFF
+  
+  // Send initial relay state to server
+  delay(1000);  // Wait a bit for WiFi to be fully ready
+  sendRelayStatus();
+
   // Print system information
   Serial.println(F("Sampling: 1 ms, Per-cycle RMS: ~20 ms, Average: ~5 s"));
   Serial.println(F("Ready to measure current..."));
+  Serial.println(F("Relay control enabled on GPIO "));
+  Serial.println(RELAY_PIN);
   Serial.println();
 }
 
@@ -227,6 +349,13 @@ void loop() {
       connectWiFi();
     }
     lastWiFiCheck = millis();
+  }
+
+  // Check for relay control commands periodically (every 2 seconds)
+  static unsigned long lastRelayCheck = 0;
+  if (millis() - lastRelayCheck > 2000) {
+    checkRelayCommand();
+    lastRelayCheck = millis();
   }
 
   // STEP 1: Sample current every 1ms and accumulate squared values
