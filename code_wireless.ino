@@ -8,7 +8,7 @@
  * The system samples at 1ms intervals, calculates RMS over each power cycle (~20ms),
  * and then averages over 5 seconds for stable readings.
  * 
- * Data is sent wirelessly to Next.js API via WiFi HTTP POST.
+ * Data is sent wirelessly to Flask API via WiFi HTTP POST.
  */
 
 #include <Wire.h>
@@ -22,11 +22,11 @@
 const char* ssid = "iPhone de Guilherme";           // ← Change to your WiFi network name
 const char* password = "12345678";    // ← Change to your WiFi password
 
-// Next.js API URL - CHANGE THIS TO YOUR COMPUTER'S IP ADDRESS
+// Flask API URL - CHANGE THIS TO YOUR COMPUTER'S IP ADDRESS
 // Find your computer's IP: Windows (ipconfig) or Mac/Linux (ifconfig)
-// Example: "http://192.168.1.100:3000/api/arduino-data"
-const char* apiUrl = "http://172.20.10.2:3000/api/arduino-data";  // ← Change to your computer's IP
-const char* relayControlUrl = "http://172.20.10.2:3000/api/relay-control";  // ← Relay control API
+// Example: "http://192.168.1.100:5000/api/arduino-data"
+const char* apiUrl = "http://172.20.10.3:5000/api/arduino-data";  // ← Your computer's IP (WiFi)
+const char* relayControlUrl = "http://172.20.10.3:5000/api/relay-control";  // ← Relay control API
 
 // Standard voltage (for power calculation)
 const double STANDARD_VOLTAGE = 230.0;  // 230V for Portugal/Spain
@@ -34,9 +34,16 @@ const double STANDARD_VOLTAGE = 230.0;  // 230V for Portugal/Spain
 //=================================================================================================================================
 // RELAY CONFIGURATION
 //=================================================================================================================================
-#define RELAY_PIN 2  // GPIO pin connected to relay module IN pin (change if needed)
-// Note: Relay module V2.0 typically uses LOW to activate and HIGH to deactivate
-// If your relay works opposite, swap the logic in setRelayState()
+// FireBeetle ESP32 pin mapping:
+// D0 = GPIO 2, D1 = GPIO 4, D2 = GPIO 5, D5 = GPIO 21, D8 = GPIO 25, D9 = GPIO 26
+// Working pins: D0 (GPIO 2), D1 (GPIO 4), D5 (GPIO 21), D8 (GPIO 25), D9 (GPIO 26)
+// D2 (GPIO 5) doesn't work - may have special function on ESP32
+// Using D0 (GPIO 2) - confirmed working (makes relay click)
+  #define RELAY_PIN D0  // Use D0 if defined by board
+
+
+// Relay logic - Most modules use active LOW (LOW = ON, HIGH = OFF)
+// If your relay doesn't work, try swapping: change LOW to HIGH and HIGH to LOW
 bool relayState = false;  // Current relay state (false = OFF, true = ON)
 
 //=================================================================================================================================
@@ -77,9 +84,50 @@ bool wifiConnected = false;
 // FUNCTIONS
 //=================================================================================================================================
 
+// Scan I2C bus for devices
+void scanI2C() {
+  byte devicesFound = 0;
+  
+  for (byte address = 1; address < 127; address++) {
+    Wire.beginTransmission(address);
+    byte error = Wire.endTransmission();
+    
+    if (error == 0) {
+      if (address == ADS1115_ADDRESS) {
+        Serial.print("✓ ADS1115 found at 0x");
+        Serial.print(address, HEX);
+        Serial.println();
+        devicesFound++;
+        break;  // Found it, no need to continue
+      }
+    }
+  }
+  
+  if (devicesFound == 0) {
+    Serial.println("✗ ADS1115 not found! Check I2C connections (SDA/SCL)");
+  }
+}
+
 // Configure the ADS1115 ADC for current measurement
 void config_i2c() {
-  Wire.begin(); // Initialize I2C communication
+  // Initialize I2C communication
+  // ESP32 default I2C pins: SDA = GPIO 21, SCL = GPIO 22
+  // If using different pins, specify: Wire.begin(SDA_PIN, SCL_PIN)
+  Wire.begin();
+  delay(200);   // Wait for I2C bus to stabilize
+  
+  Serial.println("Checking I2C connection...");
+  scanI2C();
+
+  // Verify connection
+  Wire.beginTransmission(ADS1115_ADDRESS);
+  byte testError = Wire.endTransmission();
+  
+  if (testError != 0) {
+    Serial.print("✗ ADS1115 communication error: ");
+    Serial.println(testError);
+    return;
+  }
 
   // Configure ADS1115: measure AIN1 vs GND, ±4.096V range, continuous mode, 860 samples/sec
   writeBuf[0] = 1;                // Point to configuration register
@@ -91,7 +139,12 @@ void config_i2c() {
   Wire.write(writeBuf[0]);
   Wire.write(writeBuf[1]);
   Wire.write(writeBuf[2]);
-  Wire.endTransmission();
+  byte error = Wire.endTransmission();
+
+  if (error != 0) {
+    Serial.print("✗ ADS1115 config error: ");
+    Serial.println(error);
+  }
 
   delay(500); // Wait for ADC to stabilize
 }
@@ -101,10 +154,21 @@ float read_voltage() {
   // Point to conversion result register
   Wire.beginTransmission(ADS1115_ADDRESS);
   Wire.write(0x00);
-  Wire.endTransmission();
+  byte error = Wire.endTransmission();
+  
+  if (error != 0) {
+    Serial.print("⚠ I2C error reading ADS1115: ");
+    Serial.println(error);
+    return 0.0;  // Return 0 if communication failed
+  }
 
   // Request 2 bytes of data from ADC
   Wire.requestFrom(ADS1115_ADDRESS, 2);
+  if (Wire.available() < 2) {
+    Serial.println("⚠ I2C: Not enough data from ADS1115");
+    return 0.0;
+  }
+  
   int16_t result = (Wire.read() << 8) | Wire.read();
 
   // Convert ADC reading to voltage
@@ -113,31 +177,45 @@ float read_voltage() {
   return voltage;  // Return voltage in volts
 }
 
-// Connect to WiFi
+// Connect to WiFi - tries multiple times until successful
 void connectWiFi() {
   Serial.print("Connecting to WiFi: ");
   Serial.println(ssid);
   
   WiFi.mode(WIFI_STA);
+  WiFi.disconnect();  // Disconnect any previous connection
+  delay(100);
   WiFi.begin(ssid, password);
   
   int attempts = 0;
-  while (WiFi.status() != WL_CONNECTED && attempts < 20) {
+  const int maxAttempts = 30;  // Increased to 30 attempts (15 seconds)
+  
+  while (WiFi.status() != WL_CONNECTED && attempts < maxAttempts) {
     delay(500);
     Serial.print(".");
     attempts++;
+    
+    // Print progress every 5 attempts
+    if (attempts % 10 == 0) {
+      Serial.print("(");
+      Serial.print(attempts);
+      Serial.print(")");
+    }
   }
   
   if (WiFi.status() == WL_CONNECTED) {
     wifiConnected = true;
     Serial.println();
-    Serial.println("WiFi connected!");
+    Serial.println("✓ WiFi connected!");
     Serial.print("IP address: ");
     Serial.println(WiFi.localIP());
   } else {
     wifiConnected = false;
     Serial.println();
-    Serial.println("WiFi connection failed!");
+    Serial.print("✗ WiFi connection failed after ");
+    Serial.print(attempts);
+    Serial.println(" attempts");
+    Serial.println("Will retry in loop()...");
   }
 }
 
@@ -156,44 +234,29 @@ void sendDataToAPI(double rmsCurrent) {
   double power_kw = (rmsCurrent * STANDARD_VOLTAGE) / 1000.0;
 
   // Create JSON payload
-  // Format: {"power": 0.368, "current": 0.0016, "voltage": 230.0, "timestamp": "2024-01-15T14:30:25.123Z"}
+  // Format: {"current": 0.0016, "vibration": 0.5, "user_id": "optional-uuid"}
+  // Note: timestamp is added by the server, power is calculated by server (current * 230V)
   String jsonPayload = "{";
-  jsonPayload += "\"power\":" + String(power_kw, 4) + ",";
-  jsonPayload += "\"current\":" + String(rmsCurrent, 4) + ",";
-  jsonPayload += "\"voltage\":" + String(STANDARD_VOLTAGE, 1) + ",";
+  jsonPayload += "\"current\":" + String(rmsCurrent, 4);
   
-  // Get current timestamp in ISO format
-  // Note: For accurate time, configure NTP in setup() or use millis() as fallback
-  unsigned long currentMillis = millis();
-  unsigned long seconds = currentMillis / 1000;
-  unsigned long minutes = seconds / 60;
-  unsigned long hours = minutes / 60;
+  // Add vibration if you have a vibration sensor (optional)
+  // Example: jsonPayload += ",\"vibration\":" + String(vibrationValue, 3);
   
-  // Simple timestamp format (HH:MM:SS from millis)
-  // For production, use NTP to get real time
-  char timestamp[30];
-  snprintf(timestamp, sizeof(timestamp), "2024-01-01T%02lu:%02lu:%02lu.000Z", 
-           hours % 24, minutes % 60, seconds % 60);
-  jsonPayload += "\"timestamp\":\"" + String(timestamp) + "\"";
+  // Add user_id if you have user authentication (optional)
+  // Example: jsonPayload += ",\"user_id\":\"" + String(userId) + "\"";
+  
   jsonPayload += "}";
 
   // Send POST request
   int httpResponseCode = http.POST(jsonPayload);
 
-  if (httpResponseCode > 0) {
-    if (httpResponseCode == 200) {
-      Serial.print("✓ Data sent successfully: ");
-      Serial.print("Current=");
-      Serial.print(rmsCurrent, 4);
-      Serial.print("A, Power=");
-      Serial.print(power_kw, 4);
-      Serial.println("kW");
-    } else {
-      Serial.print("✗ API Error: ");
-      Serial.println(httpResponseCode);
-    }
+  if (httpResponseCode == 200) {
+    Serial.println("✓ OK");
+  } else if (httpResponseCode > 0) {
+    Serial.print("✗ Error ");
+    Serial.println(httpResponseCode);
   } else {
-    Serial.print("✗ Connection failed: ");
+    Serial.print("✗ Failed: ");
     Serial.println(http.errorToString(httpResponseCode));
   }
 
@@ -206,37 +269,34 @@ void setRelayState(bool state) {
   // This ensures physical relay matches software state
   relayState = state;
   
-  // Relay module V2.0: Try both logics to find which works
-  // Option 1: HIGH = ON, LOW = OFF (most common)
-  // Option 2: LOW = ON, HIGH = OFF (active low - uncomment if Option 1 doesn't work)
-  
-  if (state) {
-    digitalWrite(RELAY_PIN, HIGH);  // Try HIGH for ON
-  } else {
-    digitalWrite(RELAY_PIN, LOW);   // Try LOW for OFF
-  }
-  
-  // Verify the pin was actually set
-  delay(10);  // Small delay to ensure pin state is set
-  int actualPinState = digitalRead(RELAY_PIN);
-  
   Serial.println("========================================");
-  Serial.print("[Relay] Command: Set to ");
+  Serial.print("[Relay] Changing state to: ");
   Serial.println(state ? "ON" : "OFF");
-  Serial.print("[Relay] GPIO ");
-  Serial.print(RELAY_PIN);
-  Serial.print(" written: ");
-  Serial.println(state ? "HIGH" : "LOW");
-  Serial.print("[Relay] GPIO ");
-  Serial.print(RELAY_PIN);
-  Serial.print(" read back: ");
-  Serial.println(actualPinState == HIGH ? "HIGH" : "LOW");
-  Serial.println("========================================");
+  Serial.print("[Relay] Using pin: GPIO ");
+  Serial.println(RELAY_PIN);
   
-  // If read back doesn't match, there's a problem
-  if ((state && actualPinState != HIGH) || (!state && actualPinState != LOW)) {
-    Serial.println("[Relay] ⚠ WARNING: Pin state mismatch!");
+  // Force state change: go to opposite first, then desired state
+  // This helps ensure the relay physically switches
+  // Active HIGH logic: HIGH = ON, LOW = OFF (same as test script that worked)
+  if (state) {
+    digitalWrite(RELAY_PIN, LOW);   // Go to opposite first
+    delay(20);
+    digitalWrite(RELAY_PIN, HIGH);  // HIGH = Relay ON
+    Serial.println("[Relay] Writing HIGH to pin (ON)");
+  } else {
+    digitalWrite(RELAY_PIN, HIGH);  // Go to opposite first
+    delay(20);
+    digitalWrite(RELAY_PIN, LOW);   // LOW = Relay OFF
+    Serial.println("[Relay] Writing LOW to pin (OFF)");
   }
+  
+  delay(100);  // Delay to ensure pin state is set and relay has time to switch
+  
+  // Verify pin state
+  int pinState = digitalRead(RELAY_PIN);
+  Serial.print("[Relay] Pin reading after write: ");
+  Serial.println(pinState == LOW ? "LOW" : "HIGH");
+  Serial.println("========================================");
 }
 
 // Check for relay control commands from server
@@ -254,27 +314,55 @@ void checkRelayCommand() {
   
   if (httpResponseCode == 200) {
     String response = http.getString();
-    Serial.print("Relay command check response: ");
-    Serial.println(response);
-    
-    // Parse JSON response
-    // Expected format: {"command": "on"} or {"command": "off"} or {"command": null}
-    if (response.indexOf("\"command\":\"on\"") >= 0) {
-      Serial.println("Received ON command");
-      setRelayState(true);
-      // Acknowledge command by sending status back
-      sendRelayStatus();
-    } else if (response.indexOf("\"command\":\"off\"") >= 0) {
-      Serial.println("========================================");
-      Serial.println("[Relay] ✓✓✓ RECEIVED OFF COMMAND ✓✓✓");
-      Serial.println("========================================");
-      setRelayState(false);
-      delay(100);  // Give relay time to physically switch
-      sendRelayStatus();
+    // Only print response when there's a command (to reduce spam)
+    if (response.indexOf("\"command\":\"on\"") >= 0 || response.indexOf("\"command\":\"off\"") >= 0) {
+      Serial.print("[Relay] Server response: ");
+      Serial.println(response);
     }
-    // If command is null, no action needed
+    
+    // Remove all spaces from response for easier parsing
+    String responseNoSpaces = response;
+    responseNoSpaces.replace(" ", "");
+    responseNoSpaces.replace("\n", "");
+    responseNoSpaces.replace("\r", "");
+    
+    // Parse JSON response: {"command":"on"} or {"command":"off"} or {"command":null}
+    // Check for "on" command (with quotes)
+    int onIndex = responseNoSpaces.indexOf("\"command\":\"on\"");
+    int offIndex = responseNoSpaces.indexOf("\"command\":\"off\"");
+    
+    if (onIndex >= 0 && (offIndex < 0 || onIndex < offIndex)) {
+      Serial.println("========================================");
+      Serial.println("[Relay] ⚡ COMMAND RECEIVED: ON");
+      Serial.print("[Relay] Current state: ");
+      Serial.println(relayState ? "ON" : "OFF");
+      Serial.println("========================================");
+      // Always execute, even if state seems the same (relay might be stuck)
+      setRelayState(true);
+      delay(200);  // Give relay time to switch
+      sendRelayStatus();
+    } else if (offIndex >= 0) {
+      Serial.println("========================================");
+      Serial.println("[Relay] ⚡ COMMAND RECEIVED: OFF");
+      Serial.print("[Relay] Current state: ");
+      Serial.println(relayState ? "ON" : "OFF");
+      Serial.println("========================================");
+      // Always execute, even if state seems the same (relay might be stuck)
+      setRelayState(false);
+      delay(200);  // Give relay time to switch
+      sendRelayStatus();
+    } else {
+      // No command pending - show response for debugging (only once per 10 seconds)
+      static unsigned long lastNoCommandLog = 0;
+      if (millis() - lastNoCommandLog > 10000) {
+        Serial.print("[Relay] No command (response: ");
+        Serial.print(response);
+        Serial.println(")");
+        lastNoCommandLog = millis();
+      }
+    }
   } else {
-    Serial.print("Relay command check failed: ");
+    Serial.print("[Relay] HTTP Error: ");
     Serial.println(httpResponseCode);
   }
   
@@ -284,20 +372,22 @@ void checkRelayCommand() {
 // Send current relay status to server
 void sendRelayStatus() {
   if (!wifiConnected) {
+    Serial.println("⚠ Cannot send relay status: WiFi not connected");
     return;
   }
 
   HTTPClient http;
+  http.setTimeout(1500);
+  http.setConnectTimeout(1500);
   http.begin(relayControlUrl);
   http.addHeader("Content-Type", "application/json");
   
-  // Send POST with current status
   String jsonPayload = "{\"status\":\"" + String(relayState ? "on" : "off") + "\"}";
   int httpResponseCode = http.POST(jsonPayload);
   
-  if (httpResponseCode == 200) {
-    Serial.print("Relay status sent: ");
-    Serial.println(relayState ? "ON" : "OFF");
+  if (httpResponseCode != 200 && httpResponseCode > 0) {
+    Serial.print("⚠ Relay status error: ");
+    Serial.println(httpResponseCode);
   }
   
   http.end();
@@ -314,25 +404,39 @@ void setup() {
   Serial.println(F("ESP32 RMS Current Monitor - WIRELESS"));
   Serial.println(F("========================================"));
 
-  // Connect to WiFi
-  connectWiFi();
+  // Connect to WiFi - will keep trying until successful
+  Serial.println("Initializing WiFi connection...");
+  while (!wifiConnected) {
+    connectWiFi();
+    if (!wifiConnected) {
+      Serial.println("Retrying WiFi connection in 5 seconds...");
+      delay(5000);
+    }
+  }
 
   // Configure the ADS1115 ADC
   config_i2c();
 
   // Configure relay pin
   pinMode(RELAY_PIN, OUTPUT);
+  Serial.print("[Relay] Configured pin: GPIO ");
+  Serial.println(RELAY_PIN);
+  
+  // Force initial state to OFF (LOW)
+  digitalWrite(RELAY_PIN, LOW);
+  delay(100);
+  Serial.println("[Relay] Initial state forced to LOW (OFF)");
+  
   setRelayState(false);  // Start with relay OFF
   
   // Send initial relay state to server
-  delay(1000);  // Wait a bit for WiFi to be fully ready
+  delay(500);
   sendRelayStatus();
 
   // Print system information
-  Serial.println(F("Sampling: 1 ms, Per-cycle RMS: ~20 ms, Average: ~5 s"));
-  Serial.println(F("Ready to measure current..."));
-  Serial.println(F("Relay control enabled on GPIO "));
-  Serial.println(RELAY_PIN);
+  Serial.println(F("========================================"));
+  Serial.println(F("System ready - Starting measurements..."));
+  Serial.println(F("========================================"));
   Serial.println();
 }
 
@@ -340,20 +444,26 @@ void setup() {
 // MAIN LOOP - RMS CURRENT CALCULATION
 //=================================================================================================================================
 void loop() {
-  // Check WiFi connection periodically (every 30 seconds)
+  // Check WiFi connection periodically (every 10 seconds for faster recovery)
   static unsigned long lastWiFiCheck = 0;
-  if (millis() - lastWiFiCheck > 30000) {
+  if (millis() - lastWiFiCheck > 10000) {
     if (WiFi.status() != WL_CONNECTED) {
       wifiConnected = false;
-      Serial.println("WiFi disconnected. Reconnecting...");
+      Serial.println("⚠ WiFi disconnected. Reconnecting...");
       connectWiFi();
+    } else if (!wifiConnected) {
+      // WiFi is connected but flag wasn't set
+      wifiConnected = true;
+      Serial.println("✓ WiFi reconnected!");
+      Serial.print("IP address: ");
+      Serial.println(WiFi.localIP());
     }
     lastWiFiCheck = millis();
   }
 
-  // Check for relay control commands periodically (every 2 seconds)
+  // Check for relay control commands periodically (every 500ms for faster response)
   static unsigned long lastRelayCheck = 0;
-  if (millis() - lastRelayCheck > 2000) {
+  if (millis() - lastRelayCheck > 500) {
     checkRelayCommand();
     lastRelayCheck = millis();
   }
@@ -393,7 +503,7 @@ void loop() {
       if (calib_cycles >= CALIB_NCYCLES) {
         v_calib = v_calib_acum / (double)calib_cycles;  // Calculate average baseline
         first_run = false;  // Calibration complete
-        Serial.println("Calibration complete!");
+        Serial.println("✓ Calibration complete - Starting data transmission");
       }
     }
 
@@ -415,12 +525,11 @@ void loop() {
     accumulated_current = 0.0;
     accumulated_counter = 0;
 
-    // Display on Serial (for debugging)
-    Serial.print(F("I_RMS_avg_5s (A): "));
-    Serial.println(Iavg_5s, 4);
-
-    // Send data to Next.js API via WiFi
+    // Send data to Flask API via WiFi
     if (!first_run) {  // Only send after calibration is complete
+      Serial.print(F("I_RMS_avg_5s (A): "));
+      Serial.print(Iavg_5s, 4);
+      Serial.print(F(" -> Sending to API... "));
       sendDataToAPI(Iavg_5s);
     }
   }

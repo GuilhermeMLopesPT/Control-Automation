@@ -1,84 +1,105 @@
-# Control-Automation
+# Smart Meter Dashboard - Next.js + Flask API
 
-## Sistema de Monitorização de Corrente RMS com ESP32 e Dashboard Next.js
+Sistema completo de monitoramento de energia em tempo real com ESP32, Flask API e dashboard Next.js.
 
-Este projeto integra um ESP32 que mede corrente RMS usando um transformador de corrente (CT) com um dashboard Next.js para visualização em tempo real.
+## 📋 Arquitetura
 
-## Estrutura do Projeto
-
-- **`code.ino`** - Código Arduino/ESP32 que mede corrente RMS usando ADS1115
-- **`data_extraction.py`** - Script Python que lê dados do ESP32 via serial e envia para a API Next.js
-- **`my-app/`** - Aplicação Next.js com dashboard para visualização de dados
-
-## Como Usar
-
-### 1. Configurar o ESP32
-
-1. Carrega o código `code.ino` para o ESP32
-2. O ESP32 envia dados no formato: `I_RMS_avg_5s (A): 0.0016` a cada 5 segundos
-
-### 2. Configurar o Script Python
-
-1. Edita `data_extraction.py` se necessário:
-   - `SERIAL_PORT = 'COM8'` - Muda para a tua porta COM
-   - `API_URL = "http://localhost:3000/api/arduino-data"` - URL da API Next.js
-   - `STANDARD_VOLTAGE = 230.0` - Tensão padrão (230V para Portugal/Espanha)
-
-2. Executa o script:
-   ```bash
-   python data_extraction.py
-   ```
-
-### 3. Iniciar o Dashboard Next.js
-
-1. Navega para a pasta `my-app`:
-   ```bash
-   cd my-app
-   ```
-
-2. Instala dependências (se ainda não instalaste):
-   ```bash
-   npm install
-   ```
-
-3. Inicia o servidor de desenvolvimento:
-   ```bash
-   npm run dev
-   ```
-
-4. Abre o browser em: `http://localhost:3000/dashboard`
-
-## Fluxo de Dados
-
-1. **ESP32** → Mede corrente RMS e envia via Serial (COM8)
-2. **Python Script** → Lê dados do serial, calcula potência (P = V × I), e envia para API Next.js
-3. **Next.js API** → Recebe dados via POST `/api/arduino-data`
-4. **Dashboard** → Mostra dados em tempo real (atualiza a cada 2 segundos)
-
-## Formato dos Dados
-
-O script Python envia para a API:
-```json
-{
-  "power": 0.368,        // Potência em kW (calculada: V × I / 1000)
-  "current": 0.0016,     // Corrente RMS em A (do ESP32)
-  "voltage": 230.0,      // Tensão em V (assumida constante)
-  "timestamp": "2024-01-15T14:30:25.123456"
-}
+```
+ESP32 (code_wireless.ino)
+    ↓ HTTP POST
+Flask API (api_server.py) ← Porta 5000
+    ↓ HTTP GET/POST
+Next.js Dashboard (npm run dev) ← Porta 3000
 ```
 
-## Troubleshooting
+## 🚀 Como Usar
 
-### Porta COM não disponível
-- Fecha o Serial Monitor do Arduino IDE
-- Verifica qual porta COM está a usar: Device Manager (Windows)
+### 1. Instalar dependências Python (Flask API)
 
-### API não recebe dados
-- Verifica se o Next.js está a correr (`npm run dev`)
-- Verifica se a URL da API está correta em `data_extraction.py`
-- Verifica o console do Next.js para erros
+```bash
+pip install -r requirements.txt
+```
 
-### Dados não aparecem no dashboard
-- Verifica se o script Python está a enviar dados (vê o output do script)
-- Verifica o console do browser (F12) para erros
-- O dashboard atualiza a cada 2 segundos automaticamente
+### 2. Instalar dependências Node.js (Next.js)
+
+```bash
+npm install
+```
+
+### 3. Iniciar o sistema
+
+**Terminal 1 - Flask API:**
+```bash
+python api_server.py
+```
+
+**Terminal 2 - Next.js Dashboard:**
+```bash
+npm run dev
+```
+
+### 4. Acessar
+
+- **Dashboard:** [http://localhost:3000/dashboard](http://localhost:3000/dashboard)
+- **API Health:** [http://localhost:5000/health](http://localhost:5000/health)
+
+## ⚙️ Configuração ESP32
+
+No arquivo `code_wireless.ino`, configure:
+
+1. **WiFi:**
+```cpp
+const char* ssid = "SEU_WIFI";
+const char* password = "SUA_SENHA";
+```
+
+2. **IP do computador:**
+```cpp
+const char* apiUrl = "http://SEU_IP:5000/api/arduino-data";
+const char* relayControlUrl = "http://SEU_IP:5000/api/relay-control";
+```
+
+Para descobrir seu IP:
+- Windows: `ipconfig` (procure por "IPv4 Address")
+- Mac/Linux: `ifconfig`
+
+## 📁 Estrutura do Projeto
+
+```
+├── api_server.py          # Flask API (ESSENCIAL - recebe dados do ESP32)
+├── code_wireless.ino      # Código ESP32
+├── requirements.txt       # Dependências Python
+├── package.json           # Dependências Node.js
+├── lib/
+│   └── api.js            # Cliente API para Next.js
+├── components/            # Componentes React
+├── pages/                 # Páginas Next.js
+└── styles/               # Estilos
+```
+
+## ⚠️ Importante
+
+**O `api_server.py` é ESSENCIAL!** Ele:
+- Recebe dados do ESP32 via HTTP POST
+- Fornece dados para o dashboard Next.js via HTTP GET
+- Controla o relay através do ESP32
+- Busca preços REE da API espanhola
+
+**Sem o `api_server.py`, o sistema não funciona!**
+
+## 🔧 Troubleshooting
+
+**Dashboard não carrega dados:**
+- Verifique se `api_server.py` está rodando na porta 5000
+- Verifique se o ESP32 está conectado e enviando dados
+- Verifique o console do navegador para erros
+
+**ESP32 não conecta:**
+- Verifique se o IP no código está correto
+- Verifique se o Flask API está rodando
+- Verifique a conexão WiFi do ESP32
+
+**Relay não funciona:**
+- Verifique se o ESP32 está recebendo comandos (Serial Monitor)
+- Verifique se o pin está correto no código (GPIO 2 = D0)
+
