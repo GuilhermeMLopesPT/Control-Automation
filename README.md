@@ -40,8 +40,17 @@ npm run dev
 
 ### 4. Acessar
 
+**No computador:**
 - **Dashboard:** [http://localhost:3000/dashboard](http://localhost:3000/dashboard)
 - **API Health:** [http://localhost:5000/health](http://localhost:5000/health)
+
+**No telefone (mesma rede WiFi):**
+- **Dashboard:** `http://172.20.10.3:3000/dashboard` (use o IP do seu computador)
+- O dashboard detecta automaticamente o IP e conecta à API Flask no mesmo IP
+
+**Para descobrir seu IP:**
+- Windows: `ipconfig` (procure por "IPv4 Address" na conexão WiFi)
+- Mac/Linux: `ifconfig` ou `ip addr`
 
 ## ⚙️ Configuração ESP32
 
