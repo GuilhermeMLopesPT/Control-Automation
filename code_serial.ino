@@ -53,6 +53,14 @@ double accumulated_current = 0.0; // Sum of RMS values for averaging
 int accumulated_counter = 0;      // Number of cycles averaged
 const int sampleAverage = 250;    // Cycles to average (250 cycles ≈ 5 seconds)
 
+//=================================================================================================================================
+// VIBRATION SENSOR CONFIGURATION (Piezo Disk Vibration Sensor V2 on A0)
+//=================================================================================================================================
+#define VIBRATION_PIN A0          // Analog pin for vibration sensor
+double accumulated_vibration = 0.0;  // Sum of vibration values for averaging
+int vibration_sample_count = 0;      // Number of vibration samples collected
+const int VIBRATION_SAMPLES = 250;    // Sample vibration same number of times as current (≈5 seconds)
+
 // Auto-zero calibration variables
 bool first_run = true;           // Flag for first run calibration
 double v_calib_acum = 0.0;       // Accumulated values for baseline calculation
@@ -259,6 +267,9 @@ void setup() {
   Serial.println("[Relay] Initial state: OFF");
   
   setRelayState(false);
+  
+  // Configure vibration sensor pin (A0 is analog, no pinMode needed)
+  Serial.println("[Vibration] Sensor configured on A0");
 
   Serial.println("========================================");
   Serial.println("System ready - Starting measurements...");
@@ -284,6 +295,15 @@ void loop() {
 
     quadratic_sum_v += i_inst * i_inst;
     quadratic_sum_counter++;
+    
+    // Read vibration sensor from A0 (sample at same rate as current)
+    int vibrationRaw = analogRead(VIBRATION_PIN);
+    // Convert ADC reading (0-4095) to voltage (0-3.3V), then normalize
+    // Piezo sensors typically output 0-3.3V, we'll use absolute value of deviation from center
+    double vibrationVoltage = (vibrationRaw * 3.3) / 4095.0;
+    double vibrationValue = abs(vibrationVoltage - 1.65); // Deviation from center (1.65V)
+    accumulated_vibration += vibrationValue;
+    vibration_sample_count++;
   }
 
   // STEP 2: Calculate RMS over one power cycle (20ms at 50Hz)
@@ -314,14 +334,24 @@ void loop() {
   // STEP 4: Calculate and send average RMS every 5 seconds
   if (accumulated_counter >= sampleAverage) {
     double Iavg_5s = accumulated_current / (double)accumulated_counter;
+    
+    // Calculate average vibration over same period
+    double avgVibration = 0.0;
+    if (vibration_sample_count > 0) {
+      avgVibration = accumulated_vibration / (double)vibration_sample_count;
+    }
 
     accumulated_current = 0.0;
     accumulated_counter = 0;
+    accumulated_vibration = 0.0;
+    vibration_sample_count = 0;
 
-    // Send data via Serial
+    // Send data via Serial (format: DATA:current,vibration)
     if (!first_run) {
       Serial.print("DATA:");
       Serial.print(Iavg_5s, 4);
+      Serial.print(",");
+      Serial.print(avgVibration, 3);
       Serial.println();
     }
   }

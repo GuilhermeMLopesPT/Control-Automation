@@ -4,6 +4,7 @@ import { useQuery } from '@tanstack/react-query';
 import { Activity, Zap, RefreshCw, Power } from 'lucide-react';
 import GlowCard from './GlowCard';
 import CurrentGauge from './CurrentGauge';
+import VibrationGauge from './VibrationGauge';
 import LiveChart from './LiveChart';
 import { fetchReadings, fetchRelayState, controlRelay, STANDARD_VOLTAGE } from '../lib/api';
 
@@ -50,6 +51,7 @@ export default function PowerTab() {
             }),
             current: reading.current || 0,
             power: (reading.current || 0) * STANDARD_VOLTAGE,
+            vibration: reading.vibration || 0,
           };
         });
       setChartData(formattedData);
@@ -60,15 +62,19 @@ export default function PowerTab() {
   const latestReading = readings?.[0];
   const currentValue = latestReading?.current || 0;
   const powerValue = currentValue * STANDARD_VOLTAGE;
+  const vibrationValue = latestReading?.vibration || 0;
 
   // Estatísticas
   const allCurrents = readings?.map(r => r.current || 0) || [];
   const allPowers = readings?.map(r => (r.current || 0) * STANDARD_VOLTAGE) || [];
+  const allVibrations = readings?.map(r => r.vibration || 0) || [];
   
   const avgCurrent = allCurrents.length ? allCurrents.reduce((a, b) => a + b, 0) / allCurrents.length : 0;
   const maxCurrent = allCurrents.length ? Math.max(...allCurrents) : 0;
   const avgPower = allPowers.length ? allPowers.reduce((a, b) => a + b, 0) / allPowers.length : 0;
   const maxPower = allPowers.length ? Math.max(...allPowers) : 0;
+  const avgVibration = allVibrations.length ? allVibrations.reduce((a, b) => a + b, 0) / allVibrations.length : 0;
+  const maxVibration = allVibrations.length ? Math.max(...allVibrations) : 0;
 
   // Controlar relay
   const handleRelayControl = async (command) => {
@@ -168,7 +174,7 @@ export default function PowerTab() {
       </GlowCard>
 
       {/* Gauges */}
-      <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
+      <div className="grid grid-cols-1 md:grid-cols-3 gap-6">
         <GlowCard className="p-6" glowIntensity="high">
           <div className="flex flex-col items-center">
             <CurrentGauge 
@@ -185,7 +191,7 @@ export default function PowerTab() {
               </div>
               <div className="text-center p-3 rounded-lg bg-slate-800/50">
                 <p className="text-slate-400 text-xs">Maximum</p>
-                <p className="text-amber-400 font-bold">{maxCurrent.toFixed(3)} A</p>
+                <p className="text-purple-400 font-bold">{maxCurrent.toFixed(3)} A</p>
               </div>
             </div>
           </div>
@@ -207,7 +213,29 @@ export default function PowerTab() {
               </div>
               <div className="text-center p-3 rounded-lg bg-slate-800/50">
                 <p className="text-slate-400 text-xs">Maximum</p>
-                <p className="text-amber-400 font-bold">{maxPower.toFixed(1)} W</p>
+                <p className="text-blue-400 font-bold">{maxPower.toFixed(1)} W</p>
+              </div>
+            </div>
+          </div>
+        </GlowCard>
+
+        <GlowCard className="p-6" glowIntensity="high">
+          <div className="flex flex-col items-center">
+            <VibrationGauge 
+              value={vibrationValue} 
+              maxValue={1.0} 
+              label="Vibration" 
+              unit="V"
+              color="amber"
+            />
+            <div className="mt-4 grid grid-cols-2 gap-4 w-full">
+              <div className="text-center p-3 rounded-lg bg-slate-800/50">
+                <p className="text-slate-400 text-xs">Average</p>
+                <p className="text-white font-bold">{avgVibration.toFixed(3)} V</p>
+              </div>
+              <div className="text-center p-3 rounded-lg bg-slate-800/50">
+                <p className="text-slate-400 text-xs">Maximum</p>
+                <p className="text-amber-400 font-bold">{maxVibration.toFixed(3)} V</p>
               </div>
             </div>
           </div>
@@ -215,7 +243,7 @@ export default function PowerTab() {
       </div>
 
       {/* Charts */}
-      <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
+      <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
         <LiveChart
           data={chartData}
           dataKey="current"
@@ -231,6 +259,14 @@ export default function PowerTab() {
           unit="W"
           color="#3B82F6"
           gradientId="powerGrad"
+        />
+        <LiveChart
+          data={chartData}
+          dataKey="vibration"
+          title="Vibration (V)"
+          unit="V"
+          color="#F59E0B"
+          gradientId="vibrationGrad"
         />
       </div>
 

@@ -1,8 +1,8 @@
 import React, { useState } from 'react';
 import { motion, AnimatePresence } from 'framer-motion';
 import { Euro, Activity, Zap } from 'lucide-react';
-import PricesTab from '../components/PricesTab';
-import PowerTab from '../components/PowerTab';
+import PricesTab from '../Components/PricesTab';
+import PowerTab from '../Components/PowerTab';
 
 export default function Dashboard() {
   const [activeTab, setActiveTab] = useState('power');

@@ -8,12 +8,38 @@ from flask_cors import CORS
 from datetime import datetime, timedelta
 import random
 import requests
+import os
 from typing import List, Dict, Optional
+from dotenv import load_dotenv
+
+# Load environment variables from .env file
+load_dotenv()
 
 app = Flask(__name__)
 CORS(app)  # Enable CORS for Next.js frontend
 
-# In-memory storage
+# Supabase configuration (optional)
+SUPABASE_URL = os.getenv('SUPABASE_URL')
+SUPABASE_KEY = os.getenv('SUPABASE_KEY') or os.getenv('SUPABASE_SERVICE_KEY')
+supabase_client = None
+
+# Initialize Supabase client if credentials are provided
+if SUPABASE_URL and SUPABASE_KEY:
+    try:
+        from supabase import create_client, Client
+        supabase_client: Optional[Client] = create_client(SUPABASE_URL, SUPABASE_KEY)
+        print(f'[Supabase] ✓ Connected to Supabase: {SUPABASE_URL}')
+    except ImportError:
+        print('[Supabase] ⚠ Supabase library not installed. Run: pip install supabase')
+        supabase_client = None
+    except Exception as e:
+        print(f'[Supabase] ✗ Error connecting to Supabase: {e}')
+        supabase_client = None
+else:
+    print('[Supabase] ⚠ Supabase not configured. Set SUPABASE_URL and SUPABASE_KEY in .env file')
+    print('[Supabase] Data will be stored in memory only (not persisted)')
+
+# In-memory storage (used as cache and fallback)
 recent_readings: List[Dict] = []
 relay_state: str = 'off'
 pending_command: Optional[str] = None
@@ -53,19 +79,42 @@ def post_arduino_data():
         # Calculate power
         power_kw = (data['current'] * STANDARD_VOLTAGE) / 1000.0
         
-        # Add to cache
+        # Get vibration value (default to 0 if not provided)
+        vibration = data.get('vibration', 0.0)
+        if not isinstance(vibration, (int, float)):
+            vibration = 0.0
+        
+        # Calculate power in Watts (not kW for storage)
+        power_watts = data['current'] * STANDARD_VOLTAGE
+        
+        # Prepare data for storage
         cache_data = {
             **data,
-            'power': power_kw,
+            'vibration': vibration,
+            'power': power_kw,  # Keep kW for API response
             'timestamp': timestamp
         }
         recent_readings.insert(0, cache_data)
         
-        # Keep last 100 readings
+        # Keep last 100 readings in memory cache
         if len(recent_readings) > 100:
             recent_readings[:] = recent_readings[:100]
         
-        print(f'[API] ✓ Data stored: current={cache_data["current"]}, power={cache_data["power"]}, total={len(recent_readings)}')
+        # Save to Supabase if configured
+        if supabase_client:
+            try:
+                supabase_data = {
+                    'timestamp': timestamp,
+                    'current': float(data['current']),
+                    'power': float(power_watts),  # Store in Watts
+                    'vibration': float(vibration)
+                }
+                result = supabase_client.table('power_readings').insert(supabase_data).execute()
+                print(f'[Supabase] ✓ Saved to database: id={result.data[0]["id"] if result.data else "unknown"}')
+            except Exception as e:
+                print(f'[Supabase] ✗ Error saving to database: {e}')
+        
+        print(f'[API] ✓ Data stored: current={cache_data["current"]}, vibration={cache_data["vibration"]}, power={cache_data["power"]}, total={len(recent_readings)}')
         
         return jsonify({
             'success': True,
@@ -88,14 +137,45 @@ def get_arduino_data():
         limit = int(request.args.get('limit', 50))
         user_id = request.args.get('user_id')
         
-        # Get readings from cache
-        readings = recent_readings[:limit]
+        # Try to get from Supabase first, fallback to memory cache
+        readings = []
         
-        # Filter by user_id if provided
+        if supabase_client:
+            try:
+                # Query Supabase for recent readings
+                query = supabase_client.table('power_readings')\
+                    .select('*')\
+                    .order('timestamp', desc=True)\
+                    .limit(limit)
+                
+                result = query.execute()
+                
+                if result.data:
+                    # Convert Supabase format to API format
+                    readings = []
+                    for row in result.data:
+                        # Convert power from Watts to kW for API response
+                        power_kw = (row.get('power', 0) / 1000.0) if row.get('power') else 0
+                        readings.append({
+                            'current': row.get('current', 0),
+                            'power': power_kw,
+                            'vibration': row.get('vibration', 0),
+                            'timestamp': row.get('timestamp'),
+                            'created_date': row.get('timestamp')  # Alias for compatibility
+                        })
+                    print(f'[Supabase] ✓ Retrieved {len(readings)} readings from database')
+            except Exception as e:
+                print(f'[Supabase] ✗ Error querying database: {e}, falling back to memory cache')
+                readings = recent_readings[:limit]
+        else:
+            # Use memory cache if Supabase not configured
+            readings = recent_readings[:limit]
+        
+        # Filter by user_id if provided (for future multi-user support)
         if user_id:
             readings = [r for r in readings if r.get('user_id') == user_id]
         
-        print(f'[API] GET /api/arduino-data: Returning {len(readings)} readings (total: {len(recent_readings)})')
+        print(f'[API] GET /api/arduino-data: Returning {len(readings)} readings')
         
         return jsonify({
             'success': True,
