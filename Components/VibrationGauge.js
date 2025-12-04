@@ -3,6 +3,7 @@ import { motion } from 'framer-motion';
 
 export default function VibrationGauge({ value, maxValue = 1.0, label = "Vibration", unit = "V", color = "amber" }) {
   const percentage = Math.min((value / maxValue) * 100, 100);
+  const isOverMax = value > maxValue;
   const strokeDasharray = 251.2; // 2 * PI * 40
   const strokeDashoffset = strokeDasharray - (percentage / 100) * strokeDasharray;
 
@@ -14,7 +15,9 @@ export default function VibrationGauge({ value, maxValue = 1.0, label = "Vibrati
     red: { stroke: "#EF4444", glow: "rgba(239, 68, 68, 0.5)" }
   };
 
-  const colorStyle = colors[color] || colors.amber;
+  // Use red color if value exceeds maximum
+  const effectiveColor = isOverMax ? 'red' : color;
+  const colorStyle = colors[effectiveColor] || colors.amber;
 
   return (
     <div className="flex flex-col items-center">
@@ -53,9 +56,10 @@ export default function VibrationGauge({ value, maxValue = 1.0, label = "Vibrati
             key={value}
             initial={{ scale: 0.8, opacity: 0 }}
             animate={{ scale: 1, opacity: 1 }}
-            className="text-3xl font-bold text-white"
+            className={`text-3xl font-bold ${isOverMax ? 'text-red-400' : 'text-white'}`}
           >
             {value.toFixed(3)}
+            {isOverMax && <span className="text-sm text-red-400">!</span>}
           </motion.span>
           <span className="text-slate-400 text-sm">{unit}</span>
         </div>

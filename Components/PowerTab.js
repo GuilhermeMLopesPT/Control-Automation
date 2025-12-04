@@ -75,6 +75,9 @@ export default function PowerTab() {
   const maxPower = allPowers.length ? Math.max(...allPowers) : 0;
   const avgVibration = allVibrations.length ? allVibrations.reduce((a, b) => a + b, 0) / allVibrations.length : 0;
   const maxVibration = allVibrations.length ? Math.max(...allVibrations) : 0;
+  
+  // Dynamic maxValue for vibration gauge (max historical + 20% buffer, min 1.0V, max 3.3V)
+  const vibrationMaxValue = Math.max(1.0, Math.min(3.3, maxVibration * 1.2 || 1.0));
 
   // Controlar relay
   const handleRelayControl = async (command) => {
@@ -223,7 +226,7 @@ export default function PowerTab() {
           <div className="flex flex-col items-center">
             <VibrationGauge 
               value={vibrationValue} 
-              maxValue={1.0} 
+              maxValue={vibrationMaxValue} 
               label="Vibration" 
               unit="V"
               color="amber"
