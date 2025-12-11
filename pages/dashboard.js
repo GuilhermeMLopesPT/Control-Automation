@@ -1,8 +1,9 @@
 import React, { useState } from 'react';
 import { motion, AnimatePresence } from 'framer-motion';
-import { Euro, Activity, Zap } from 'lucide-react';
+import { Euro, Activity, Zap, History } from 'lucide-react';
 import PricesTab from '../Components/PricesTab';
 import PowerTab from '../Components/PowerTab';
+import MeasurementHistoryTab from '../Components/MeasurementHistoryTab';
 
 export default function Dashboard() {
   const [activeTab, setActiveTab] = useState('power');
@@ -33,11 +34,8 @@ export default function Dashboard() {
             </motion.div>
           </div>
           <h1 className="text-4xl md:text-5xl font-bold bg-gradient-to-r from-purple-300 via-violet-300 to-purple-400 bg-clip-text text-transparent mb-3">
-            Smart Meter Dashboard
+            OhmAI
           </h1>
-          <p className="text-slate-400 text-lg">
-            Real-time power monitoring for your ESP32 smart plug
-          </p>
         </motion.div>
 
         {/* Tab Navigation */}
@@ -48,7 +46,7 @@ export default function Dashboard() {
           className="flex justify-center mb-8"
         >
           <div className="inline-flex p-1.5 rounded-2xl bg-slate-800/50 backdrop-blur-xl border border-purple-500/20 shadow-xl shadow-purple-500/10">
-            <div className="flex gap-2">
+            <div className="flex gap-2 flex-wrap justify-center">
               <button
                 onClick={() => setActiveTab('power')}
                 className={`
@@ -77,22 +75,36 @@ export default function Dashboard() {
                 <Euro className="w-4 h-4" />
                 Energy Prices
               </button>
+              <button
+                onClick={() => setActiveTab('history')}
+                className={`
+                  px-6 py-3 rounded-xl font-medium transition-all duration-300
+                  flex items-center gap-2
+                  ${activeTab === 'history'
+                    ? 'bg-gradient-to-r from-purple-600 to-violet-600 text-white shadow-lg shadow-purple-500/30'
+                    : 'text-slate-400 hover:text-white hover:bg-slate-700/50'
+                  }
+                `}
+              >
+                <History className="w-4 h-4" />
+                Measurement History
+              </button>
             </div>
           </div>
         </motion.div>
 
-        {/* Tab Content */}
-        <AnimatePresence mode="wait">
-          <motion.div
-            key={activeTab}
-            initial={{ opacity: 0, y: 20 }}
-            animate={{ opacity: 1, y: 0 }}
-            exit={{ opacity: 0, y: -20 }}
-            transition={{ duration: 0.3 }}
-          >
-            {activeTab === 'prices' ? <PricesTab /> : <PowerTab />}
-          </motion.div>
-        </AnimatePresence>
+        {/* Tab Content - Keep all components mounted to preserve state */}
+        <div className="relative">
+          <div style={{ display: activeTab === 'power' ? 'block' : 'none' }}>
+            <PowerTab />
+          </div>
+          <div style={{ display: activeTab === 'prices' ? 'block' : 'none' }}>
+            <PricesTab />
+          </div>
+          <div style={{ display: activeTab === 'history' ? 'block' : 'none' }}>
+            <MeasurementHistoryTab />
+          </div>
+        </div>
 
         {/* Footer */}
         <motion.footer
